@@ -126,7 +126,6 @@ mod logging {
 
     static SHOULD_LOG: AtomicBool = AtomicBool::new(cfg!(all(debug_assertions, feature = "std")));
 
-    #[cfg_attr(not(feature = "tray"), expect(dead_code, reason = "Only used by tray"))]
     pub fn is_logging() -> bool {
         SHOULD_LOG.load(Ordering::Acquire)
     }
@@ -321,9 +320,11 @@ macro_rules! log {
     ($($value:expr),* $(,)?) => {
         #[cfg(feature = "logging")]
         {
-            $(
-                $crate::logging::LogValue::from($value).write();
-            )*
+            if $crate::logging::is_logging() {
+                $(
+                    $crate::logging::LogValue::from($value).write();
+                )*
+            }
         }
         #[cfg(not(feature = "logging"))]
         {

@@ -117,10 +117,11 @@ mod logging {
     //! such a window if it doesn't exist (which it only does in debug builds
     //! when `std` is enabled since we then use the default `console` subsystem).
 
-    use crate::log_error;
+    use crate::{log_error, FgColor};
     use core::sync::atomic::{AtomicBool, Ordering};
     use windows_sys::Win32::System::Console::{
-        AllocConsole, FreeConsole, GetStdHandle, WriteConsoleA, STD_OUTPUT_HANDLE,
+        AllocConsole, FreeConsole, GetStdHandle, SetConsoleTextAttribute, WriteConsoleA,
+        FOREGROUND_BLUE, FOREGROUND_GREEN, FOREGROUND_INTENSITY, FOREGROUND_RED, STD_OUTPUT_HANDLE,
     };
 
     static SHOULD_LOG: AtomicBool = AtomicBool::new(cfg!(all(debug_assertions, feature = "std")));
@@ -154,12 +155,13 @@ mod logging {
         }
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Clone, Copy)]
     pub enum LogValue<'a> {
         /// A number.
         Number(u32),
         /// ASCII text.
         Text(&'a [u8]),
+        Color(FgColor),
     }
     impl<'a> LogValue<'a> {
         /// Write this value to the console.
@@ -182,6 +184,14 @@ mod logging {
             let mut ascii = match self {
                 LogValue::Number(number) => buffer.format(number).as_bytes(),
                 LogValue::Text(ascii) => ascii,
+                LogValue::Color(color) => {
+                    let result =
+                        unsafe { SetConsoleTextAttribute(handle, color.windows_text_attribute()) };
+                    if result == 0 {
+                        log_error("Failed to set text color");
+                    }
+                    return;
+                }
             };
             while !ascii.is_empty() {
                 let mut written: u32 = 0;
@@ -217,7 +227,94 @@ mod logging {
             LogValue::Number(value)
         }
     }
+    impl From<FgColor> for LogValue<'_> {
+        fn from(value: FgColor) -> Self {
+            LogValue::Color(value)
+        }
+    }
+
+    impl FgColor {
+        const fn to_less_bright(self) -> Self {
+            match self {
+                FgColor::Reset
+                | FgColor::Black
+                | FgColor::Red
+                | FgColor::Green
+                | FgColor::Yellow
+                | FgColor::Blue
+                | FgColor::Magenta
+                | FgColor::Cyan
+                | FgColor::White => self,
+                FgColor::BrightBlack => Self::Black,
+                FgColor::BrightRed => Self::Red,
+                FgColor::BrightGreen => Self::Green,
+                FgColor::BrightYellow => Self::Yellow,
+                FgColor::BrightBlue => Self::Blue,
+                FgColor::BrightMagenta => Self::Magenta,
+                FgColor::BrightCyan => Self::Cyan,
+                FgColor::BrightWhite => Self::White,
+            }
+        }
+        const fn windows_text_attribute(self) -> u16 {
+            match self {
+                FgColor::Reset => FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,
+                FgColor::Black => 0,
+                FgColor::Red => FOREGROUND_RED,
+                FgColor::Green => FOREGROUND_GREEN,
+                FgColor::Yellow => FOREGROUND_RED | FOREGROUND_GREEN,
+                FgColor::Blue => FOREGROUND_BLUE,
+                FgColor::Magenta => FOREGROUND_RED | FOREGROUND_BLUE,
+                FgColor::Cyan => FOREGROUND_GREEN | FOREGROUND_BLUE,
+                FgColor::White => FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,
+                FgColor::BrightBlack
+                | FgColor::BrightRed
+                | FgColor::BrightGreen
+                | FgColor::BrightYellow
+                | FgColor::BrightBlue
+                | FgColor::BrightMagenta
+                | FgColor::BrightCyan
+                | FgColor::BrightWhite => {
+                    self.to_less_bright().windows_text_attribute() | FOREGROUND_INTENSITY
+                }
+            }
+        }
+        #[expect(
+            dead_code,
+            reason = "we use console text attributes to be more compatible with older Windows terminals"
+        )]
+        const fn ansi(self) -> &'static [u8] {
+            match self {
+                FgColor::Reset => b"\x1B[0m",
+                FgColor::Black => b"\x1B[0;30m",
+                FgColor::Red => b"\x1B[0;31m",
+                FgColor::Green => b"\x1B[0;32m",
+                FgColor::Yellow => b"\x1B[0;33m",
+                FgColor::Blue => b"\x1B[0;34m",
+                FgColor::Magenta => b"\x1B[0;35m",
+                FgColor::Cyan => b"\x1B[0;36m",
+                FgColor::White => b"\x1B[0;37m",
+                FgColor::BrightBlack => b"\x1B[0m90m",
+                FgColor::BrightRed => b"\x1B[0m91m",
+                FgColor::BrightGreen => b"\x1B[0m92m",
+                FgColor::BrightYellow => b"\x1B[0m93m",
+                FgColor::BrightBlue => b"\x1B[0m94m",
+                FgColor::BrightMagenta => b"\x1B[0m95m",
+                FgColor::BrightCyan => b"\x1B[0m96m",
+                FgColor::BrightWhite => b"\x1B[0m97m",
+            }
+        }
+    }
 }
+
+use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use core::*;
+use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::SystemInformation::GetTickCount;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, SetWindowsHookExW, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
+    WM_RBUTTONUP,
+};
+
 /// Logs values to console if the `logging` Cargo feature is enabled and a
 /// console has been created (for example using the tray icon).
 macro_rules! log {
@@ -237,15 +334,6 @@ macro_rules! log {
     };
 }
 
-use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use core::*;
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::System::SystemInformation::GetTickCount;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, SetWindowsHookExW, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
-    WM_RBUTTONUP,
-};
-
 #[inline(always)]
 fn log_error(_error: impl core::fmt::Display) {
     #[cfg(all(feature = "std", debug_assertions, not(feature = "logging")))]
@@ -258,6 +346,41 @@ fn log_error(_error: impl core::fmt::Display) {
 
         _ = write!(std::io::stdout(), "{}", _error);
     }
+}
+
+/// Terminal colors using ANSI escape codes or Windows console text attributes.
+///
+/// # References
+///
+/// - <https://en.wikipedia.org/wiki/ANSI_escape_code>
+/// - <https://stackoverflow.com/questions/2348000/colors-in-c-win32-console>
+/// - <https://stackoverflow.com/questions/43539956/how-to-stop-the-effect-of-ansi-text-color-code-or-set-text-color-back-to-default>
+#[derive(Clone, Copy)]
+#[expect(dead_code, reason = "we don't use all these colors yet")]
+enum FgColor {
+    Reset,
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    White,
+    BrightBlack,
+    BrightRed,
+    BrightGreen,
+    BrightYellow,
+    BrightBlue,
+    BrightMagenta,
+    BrightCyan,
+    BrightWhite,
+}
+impl FgColor {
+    /// Color for log messages where a mouse click was blocked/ignored.
+    const BLOCKED: Self = Self::BrightRed;
+    /// Color for parts of log messages that includes time values.
+    const TIME: Self = Self::BrightCyan;
 }
 
 static THRESHOLD_LM: AtomicU32 = AtomicU32::new(30);
@@ -286,17 +409,25 @@ unsafe extern "system" fn low_level_mouse_proc(
                     tick.saturating_sub(LAST_DOWN_L.load(Relaxed).max(LAST_UP_L.load(Relaxed)));
                 if time_since_last_event < THRESHOLD_LM.load(Relaxed) {
                     log![
+                        FgColor::BLOCKED,
                         b"Left click ignored (too frequent, within ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::BLOCKED,
+                        b")\r\n",
+                        FgColor::Reset,
                     ];
                     return 1;
                 } else {
                     LAST_DOWN_L.store(tick, Relaxed);
                     log![
                         b"Left click accepted (after ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::Reset,
+                        b")\r\n",
                     ];
                 }
             }
@@ -305,17 +436,25 @@ unsafe extern "system" fn low_level_mouse_proc(
                 let time_since_last_event = tick.saturating_sub(LAST_UP_L.load(Relaxed));
                 if time_since_last_event < THRESHOLD_LM.load(Relaxed) {
                     log![
+                        FgColor::BLOCKED,
                         b"\tLeft button up event ignored (too frequent, within ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::BLOCKED,
+                        b")\r\n",
+                        FgColor::Reset,
                     ];
                     return 1;
                 } else {
                     LAST_UP_L.store(tick, Relaxed);
                     log![
                         b"\tLeft button up event accepted (after ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::Reset,
+                        b")\r\n",
                     ];
                 }
             }
@@ -325,17 +464,25 @@ unsafe extern "system" fn low_level_mouse_proc(
                     tick.saturating_sub(LAST_DOWN_R.load(Relaxed).max(LAST_UP_R.load(Relaxed)));
                 if time_since_last_event < THRESHOLD_RM.load(Relaxed) {
                     log![
+                        FgColor::BLOCKED,
                         b"Right click ignored (too frequent, within ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::BLOCKED,
+                        b")\r\n",
+                        FgColor::Reset,
                     ];
                     return 1;
                 } else {
                     LAST_DOWN_R.store(tick, Relaxed);
                     log![
                         b"Right click accepted (after ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::Reset,
+                        b")\r\n",
                     ];
                 }
             }
@@ -344,17 +491,25 @@ unsafe extern "system" fn low_level_mouse_proc(
                 let time_since_last_event = tick.saturating_sub(LAST_UP_R.load(Relaxed));
                 if time_since_last_event < THRESHOLD_RM.load(Relaxed) {
                     log![
+                        FgColor::BLOCKED,
                         b"\tRight button up event ignored (too frequent, within ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::BLOCKED,
+                        b")\r\n",
+                        FgColor::Reset,
                     ];
                     return 1;
                 } else {
                     LAST_UP_R.store(tick, Relaxed);
                     log![
                         b"\tRight button up event accepted (after ",
+                        FgColor::TIME,
                         time_since_last_event,
-                        b" ms)\r\n"
+                        b" ms",
+                        FgColor::Reset,
+                        b")\r\n",
                     ];
                 }
             }
@@ -401,15 +556,21 @@ fn program_start() {
     }
 
     log![
-        b"\r\nProgram Config:\r\nLeft Click: ",
+        b"\r\nProgram Config:\r\nLeft Click:  ",
+        FgColor::TIME,
         THRESHOLD_LM.load(Relaxed),
+        b" ms",
+        FgColor::Reset,
         if THRESHOLD_LM.load(Relaxed) == 0 {
             b" (Disabled)".as_slice()
         } else {
             b""
         },
         b"\r\nRight Click: ",
+        FgColor::TIME,
         THRESHOLD_RM.load(Relaxed),
+        b" ms",
+        FgColor::Reset,
         if THRESHOLD_RM.load(Relaxed) == 0 {
             b" (Disabled)".as_slice()
         } else {

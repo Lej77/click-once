@@ -322,7 +322,7 @@ macro_rules! log {
         #[cfg(feature = "logging")]
         {
             $(
-                logging::LogValue::from($value).write();
+                $crate::logging::LogValue::from($value).write();
             )*
         }
         #[cfg(not(feature = "logging"))]
@@ -391,6 +391,9 @@ const WM_LBUTTONUPU: usize = WM_LBUTTONUP as _;
 const WM_RBUTTONDOWNU: usize = WM_RBUTTONDOWN as _;
 const WM_RBUTTONUPU: usize = WM_RBUTTONUP as _;
 
+#[cfg(feature = "logging")]
+static BLOCKED_CLICKS: AtomicU32 = AtomicU32::new(0);
+
 unsafe extern "system" fn low_level_mouse_proc(
     code: i32,
     wparam: WPARAM,
@@ -407,6 +410,7 @@ unsafe extern "system" fn low_level_mouse_proc(
                 let tick = GetTickCount();
                 let time_since_last_event =
                     tick.saturating_sub(LAST_DOWN_L.load(Relaxed).max(LAST_UP_L.load(Relaxed)));
+
                 if time_since_last_event < THRESHOLD_LM.load(Relaxed) {
                     log![
                         FgColor::BLOCKED,
@@ -418,6 +422,10 @@ unsafe extern "system" fn low_level_mouse_proc(
                         b")\r\n",
                         FgColor::Reset,
                     ];
+
+                    #[cfg(feature = "logging")]
+                    BLOCKED_CLICKS.fetch_add(1, Relaxed);
+
                     return 1;
                 } else {
                     LAST_DOWN_L.store(tick, Relaxed);
@@ -434,6 +442,7 @@ unsafe extern "system" fn low_level_mouse_proc(
             WM_LBUTTONUPU => {
                 let tick = GetTickCount();
                 let time_since_last_event = tick.saturating_sub(LAST_UP_L.load(Relaxed));
+
                 if time_since_last_event < THRESHOLD_LM.load(Relaxed) {
                     log![
                         FgColor::BLOCKED,
@@ -445,6 +454,10 @@ unsafe extern "system" fn low_level_mouse_proc(
                         b")\r\n",
                         FgColor::Reset,
                     ];
+
+                    #[cfg(feature = "logging")]
+                    BLOCKED_CLICKS.fetch_add(1, Relaxed);
+
                     return 1;
                 } else {
                     LAST_UP_L.store(tick, Relaxed);
@@ -462,6 +475,7 @@ unsafe extern "system" fn low_level_mouse_proc(
                 let tick = GetTickCount();
                 let time_since_last_event =
                     tick.saturating_sub(LAST_DOWN_R.load(Relaxed).max(LAST_UP_R.load(Relaxed)));
+
                 if time_since_last_event < THRESHOLD_RM.load(Relaxed) {
                     log![
                         FgColor::BLOCKED,
@@ -473,6 +487,10 @@ unsafe extern "system" fn low_level_mouse_proc(
                         b")\r\n",
                         FgColor::Reset,
                     ];
+
+                    #[cfg(feature = "logging")]
+                    BLOCKED_CLICKS.fetch_add(1, Relaxed);
+
                     return 1;
                 } else {
                     LAST_DOWN_R.store(tick, Relaxed);
@@ -489,6 +507,7 @@ unsafe extern "system" fn low_level_mouse_proc(
             WM_RBUTTONUPU => {
                 let tick = GetTickCount();
                 let time_since_last_event = tick.saturating_sub(LAST_UP_R.load(Relaxed));
+
                 if time_since_last_event < THRESHOLD_RM.load(Relaxed) {
                     log![
                         FgColor::BLOCKED,
@@ -500,6 +519,10 @@ unsafe extern "system" fn low_level_mouse_proc(
                         b")\r\n",
                         FgColor::Reset,
                     ];
+
+                    #[cfg(feature = "logging")]
+                    BLOCKED_CLICKS.fetch_add(1, Relaxed);
+
                     return 1;
                 } else {
                     LAST_UP_R.store(tick, Relaxed);
@@ -737,6 +760,12 @@ fn program_start() {
                         let enable = !logging::is_logging();
                         logging::set_should_log(enable);
                         self.logging_item.set_checked(enable);
+                        log![
+                            b"\r\nLogging for click-once!\r\n\r\n\
+                            Clicks blocked since program was started: ",
+                            BLOCKED_CLICKS.load(Relaxed),
+                            b"\r\n\r\n\r\n",
+                        ];
                     }
                 }
             }

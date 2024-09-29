@@ -2,13 +2,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(feature = "std"), no_main)]
+// Lints:
+#![warn(clippy::allow_attributes_without_reason)]
 
 #[cfg(all(test, not(feature = "std")))]
 core::compile_error!("cargo test is only supported with \"std\" feature");
 
-mod core_runtime {
+#[cfg(not(any(feature = "std", test)))]
+mod std_polyfill {
     //! Reimplement argument parsing and panic handling for `no_std` target.
-    #![cfg(not(any(feature = "std", test)))]
 
     use core::{panic, slice, str};
     use windows_sys::Win32::System::Environment::GetCommandLineA;
@@ -39,7 +41,8 @@ mod core_runtime {
     #[link(name = "libvcruntime")]
     extern "C" {}
 
-    // Wine's impl: https://github.com/wine-mirror/wine/blob/7ec5f555b05152dda53b149d5994152115e2c623/dlls/shell32/shell32_main.c#L58
+    /// Wine's impl:
+    /// <https://github.com/wine-mirror/wine/blob/7ec5f555b05152dda53b149d5994152115e2c623/dlls/shell32/shell32_main.c#L58>
     #[inline(always)]
     pub fn args() -> impl Iterator<Item = &'static str> {
         unsafe {
@@ -73,8 +76,14 @@ mod core_runtime {
 
             slice::from_raw_parts(pcmdline_s, pcmdline.offset_from(pcmdline_s) as usize)
                 .split(|p| p == &SPACE)
+                .filter(|p| !p.is_empty())
                 .map(|v| str::from_utf8(v).unwrap_or_else(|_| ExitProcess(1)))
         }
+    }
+
+    #[inline(always)]
+    pub fn exit(code: i32) -> ! {
+        unsafe { ExitProcess(code as u32) }
     }
 
     #[no_mangle]
@@ -84,8 +93,148 @@ mod core_runtime {
 
     #[panic_handler]
     fn panic(_info: &panic::PanicInfo) -> ! {
-        unsafe { ExitProcess(1) }
+        exit(1)
     }
+}
+
+#[cfg(feature = "std")]
+mod std_polyfill {
+    //! Re-export std functions so that they have the same signatures and
+    //! behavior as our `std_polyfill` has on `no_std`.
+
+    pub use std::process::exit;
+
+    /// Wrapper around [`std::env::args`] that skips the first argument (which
+    /// would otherwise be the executable's path).
+    pub fn args() -> impl Iterator<Item = String> {
+        std::env::args().skip(1)
+    }
+}
+
+#[cfg(feature = "logging")]
+mod logging {
+    //! Implements logging by writing to a console window, optionally creating
+    //! such a window if it doesn't exist (which it only does in debug builds
+    //! when `std` is enabled since we then use the default `console` subsystem).
+
+    use crate::log_error;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use windows_sys::Win32::System::Console::{
+        AllocConsole, FreeConsole, GetStdHandle, WriteConsoleA, STD_OUTPUT_HANDLE,
+    };
+
+    static SHOULD_LOG: AtomicBool = AtomicBool::new(cfg!(all(debug_assertions, feature = "std")));
+
+    #[cfg_attr(not(feature = "tray"), expect(dead_code, reason = "Only used by tray"))]
+    pub fn is_logging() -> bool {
+        SHOULD_LOG.load(Ordering::Acquire)
+    }
+
+    /// Create or destroy a console window.
+    ///
+    /// # References
+    ///
+    /// - <https://learn.microsoft.com/en-us/windows/console/allocconsole>
+    pub fn set_should_log(enabled: bool) {
+        if SHOULD_LOG
+            .compare_exchange(!enabled, enabled, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            let result = if enabled {
+                unsafe { AllocConsole() }
+            } else {
+                unsafe { FreeConsole() }
+            };
+            if result == 0 {
+                log_error(format_args!(
+                    "Failed to {} console",
+                    if enabled { "create" } else { "destroy" }
+                ));
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum LogValue<'a> {
+        /// A number.
+        Number(u32),
+        /// ASCII text.
+        Text(&'a [u8]),
+    }
+    impl<'a> LogValue<'a> {
+        /// Write this value to the console.
+        ///
+        /// # References
+        ///
+        /// - <https://stackoverflow.com/questions/28890402/win32-console-write-c-c>
+        /// - <https://learn.microsoft.com/en-us/windows/console/writeconsole>
+        /// - <https://docs.rs/windows-sys/0.52.0/windows_sys/Win32/System/Console/fn.WriteConsoleA.html>
+        pub fn write(self) {
+            if !SHOULD_LOG.load(Ordering::Acquire) {
+                return;
+            }
+            let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+            if handle.is_null() {
+                log_error("Failed to get handle to console window");
+            }
+
+            let mut buffer = itoa::Buffer::new();
+            let mut ascii = match self {
+                LogValue::Number(number) => buffer.format(number).as_bytes(),
+                LogValue::Text(ascii) => ascii,
+            };
+            while !ascii.is_empty() {
+                let mut written: u32 = 0;
+                let result = unsafe {
+                    WriteConsoleA(
+                        handle,
+                        ascii.as_ptr(),
+                        ascii.len() as u32,
+                        &mut written,
+                        core::ptr::null(),
+                    )
+                };
+                if result == 0 {
+                    log_error("WriteConsoleA failed");
+                    return;
+                }
+                ascii = &ascii[written as usize..];
+            }
+        }
+    }
+    impl<'a> From<&'a [u8]> for LogValue<'a> {
+        fn from(value: &'a [u8]) -> Self {
+            LogValue::Text(value)
+        }
+    }
+    impl<'a, const N: usize> From<&'a [u8; N]> for LogValue<'a> {
+        fn from(value: &'a [u8; N]) -> Self {
+            LogValue::Text(value)
+        }
+    }
+    impl From<u32> for LogValue<'_> {
+        fn from(value: u32) -> Self {
+            LogValue::Number(value)
+        }
+    }
+}
+/// Logs values to console if the `logging` Cargo feature is enabled and a
+/// console has been created (for example using the tray icon).
+macro_rules! log {
+    ($($value:expr),* $(,)?) => {
+        #[cfg(feature = "logging")]
+        {
+            $(
+                logging::LogValue::from($value).write();
+            )*
+        }
+        #[cfg(not(feature = "logging"))]
+        {
+            $(
+                _ = $value;
+            )*
+        }
+    };
 }
 
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
@@ -97,7 +246,21 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONUP,
 };
 
-static THRESHOLD_LM: AtomicU32 = AtomicU32::new(0);
+#[inline(always)]
+fn log_error(_error: impl core::fmt::Display) {
+    #[cfg(all(feature = "std", debug_assertions, not(feature = "logging")))]
+    {
+        eprintln!("Error: {_error}");
+    }
+    #[cfg(all(feature = "std", feature = "logging"))]
+    {
+        use std::io::Write;
+
+        _ = write!(std::io::stdout(), "{}", _error);
+    }
+}
+
+static THRESHOLD_LM: AtomicU32 = AtomicU32::new(30);
 static THRESHOLD_RM: AtomicU32 = AtomicU32::new(0);
 
 const WM_LBUTTONDOWNU: usize = WM_LBUTTONDOWN as _;
@@ -119,38 +282,80 @@ unsafe extern "system" fn low_level_mouse_proc(
         match wparam {
             WM_LBUTTONDOWNU => {
                 let tick = GetTickCount();
-                if !(tick - LAST_DOWN_L.load(Relaxed) >= THRESHOLD_LM.load(Relaxed)
-                    && tick - LAST_UP_L.load(Relaxed) >= THRESHOLD_LM.load(Relaxed))
-                {
+                let time_since_last_event =
+                    tick.saturating_sub(LAST_DOWN_L.load(Relaxed).max(LAST_UP_L.load(Relaxed)));
+                if time_since_last_event < THRESHOLD_LM.load(Relaxed) {
+                    log![
+                        b"Left click ignored (too frequent, within ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                     return 1;
                 } else {
                     LAST_DOWN_L.store(tick, Relaxed);
+                    log![
+                        b"Left click accepted (after ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                 }
             }
             WM_LBUTTONUPU => {
                 let tick = GetTickCount();
-                if !(tick - LAST_UP_L.load(Relaxed) >= THRESHOLD_LM.load(Relaxed)) {
+                let time_since_last_event = tick.saturating_sub(LAST_UP_L.load(Relaxed));
+                if time_since_last_event < THRESHOLD_LM.load(Relaxed) {
+                    log![
+                        b"\tLeft button up event ignored (too frequent, within ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                     return 1;
                 } else {
                     LAST_UP_L.store(tick, Relaxed);
+                    log![
+                        b"\tLeft button up event accepted (after ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                 }
             }
             WM_RBUTTONDOWNU => {
                 let tick = GetTickCount();
-                if !(tick - LAST_DOWN_R.load(Relaxed) >= THRESHOLD_RM.load(Relaxed)
-                    && tick - LAST_UP_R.load(Relaxed) >= THRESHOLD_RM.load(Relaxed))
-                {
+                let time_since_last_event =
+                    tick.saturating_sub(LAST_DOWN_R.load(Relaxed).max(LAST_UP_R.load(Relaxed)));
+                if time_since_last_event < THRESHOLD_RM.load(Relaxed) {
+                    log![
+                        b"Right click ignored (too frequent, within ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                     return 1;
                 } else {
                     LAST_DOWN_R.store(tick, Relaxed);
+                    log![
+                        b"Right click accepted (after ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                 }
             }
             WM_RBUTTONUPU => {
                 let tick = GetTickCount();
-                if !(tick - LAST_UP_R.load(Relaxed) >= THRESHOLD_RM.load(Relaxed)) {
+                let time_since_last_event = tick.saturating_sub(LAST_UP_R.load(Relaxed));
+                if time_since_last_event < THRESHOLD_RM.load(Relaxed) {
+                    log![
+                        b"\tRight button up event ignored (too frequent, within ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                     return 1;
                 } else {
                     LAST_UP_R.store(tick, Relaxed);
+                    log![
+                        b"\tRight button up event accepted (after ",
+                        time_since_last_event,
+                        b" ms)\r\n"
+                    ];
                 }
             }
             _ => (),
@@ -161,12 +366,20 @@ unsafe extern "system" fn low_level_mouse_proc(
 }
 
 fn parse_and_save_args() {
-    #[cfg(not(feature = "std"))]
-    let args = core_runtime::args();
-    #[cfg(feature = "std")]
-    let args = std::env::args();
+    let args = std_polyfill::args();
 
-    let mut args = args.filter_map(|arg| arg.parse::<u32>().ok());
+    let mut args = args.filter_map(|arg| {
+        #[cfg(feature = "logging")]
+        if arg.trim().eq_ignore_ascii_case("logging") {
+            logging::set_should_log(true);
+            return None;
+        }
+        Some(
+            arg.parse::<u32>()
+                .inspect_err(|e| log_error(e))
+                .unwrap_or_else(|_| std_polyfill::exit(2)),
+        )
+    });
 
     if let Some(arg_lm) = args.next() {
         THRESHOLD_LM.store(arg_lm, Relaxed);
@@ -179,12 +392,40 @@ fn parse_and_save_args() {
 fn program_start() {
     parse_and_save_args();
 
+    #[cfg(feature = "std")]
+    {
+        // Allow enabling logging using an environment variable:
+        if std::env::var_os("CLICK_ONCE_LOGGING").is_some_and(|value| !value.is_empty()) {
+            logging::set_should_log(true);
+        }
+    }
+
+    log![
+        b"\r\nProgram Config:\r\nLeft Click: ",
+        THRESHOLD_LM.load(Relaxed),
+        if THRESHOLD_LM.load(Relaxed) == 0 {
+            b" (Disabled)".as_slice()
+        } else {
+            b""
+        },
+        b"\r\nRight Click: ",
+        THRESHOLD_RM.load(Relaxed),
+        if THRESHOLD_RM.load(Relaxed) == 0 {
+            b" (Disabled)".as_slice()
+        } else {
+            b""
+        },
+        b"\r\n\r\n",
+    ];
+
     unsafe {
         SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), ptr::null_mut(), 0);
     }
 
     #[cfg(feature = "tray")]
     {
+        #[cfg(feature = "logging")]
+        use tray_icon::menu::CheckMenuItem;
         use tray_icon::{
             menu::{
                 accelerator::{Accelerator, Code},
@@ -205,45 +446,88 @@ fn program_start() {
         #[derive(Debug)]
         enum UserEvent {
             Quit,
+            #[cfg(feature = "logging")]
+            ToggleLogging,
         }
 
         let tray_menu = Menu::new();
         let quit_item = MenuItem::new("Quit", true, Some(Accelerator::new(None, Code::KeyQ)));
-        tray_menu.append(&quit_item).unwrap();
+        #[cfg(feature = "logging")]
+        let logging_item = CheckMenuItem::new(
+            "Toggle Logging",
+            true,
+            logging::is_logging(),
+            Some(Accelerator::new(None, Code::KeyL)),
+        );
+
+        tray_menu
+            .append_items(&[
+                #[cfg(feature = "logging")]
+                &logging_item,
+                &quit_item,
+            ])
+            .expect("Failed to add context menu items");
 
         let mut tray = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
-            .with_tooltip("click-once");
+            .with_tooltip({
+                use std::fmt::Write;
+
+                let mut tooltip = "click-once".to_owned();
+                {
+                    tooltip.push_str("\r\nLeft Click: ");
+                    let threshold_left = THRESHOLD_LM.load(Relaxed);
+                    if threshold_left == 0 {
+                        tooltip.push_str("Disabled");
+                    } else {
+                        write!(tooltip, "{} ms", threshold_left).unwrap();
+                    }
+                }
+                {
+                    tooltip.push_str("\r\nRight Click: ");
+                    let threshold_right = THRESHOLD_RM.load(Relaxed);
+                    if threshold_right == 0 {
+                        tooltip.push_str("Disabled");
+                    } else {
+                        write!(tooltip, "{} ms", threshold_right).unwrap();
+                    }
+                }
+                tooltip
+            });
 
         // https://learn.microsoft.com/en-us/windows/deployment/usmt/usmt-recognized-environment-variables
-        if let Ok(win_dir) = std::env::var("WINDIR") {
-            pub fn to_utf16(s: &str) -> Vec<u16> {
-                use std::ffi::OsStr;
-                use std::os::windows::ffi::OsStrExt;
+        match std::env::var("WINDIR") {
+            Ok(win_dir) => {
+                pub fn to_utf16(s: &str) -> Vec<u16> {
+                    use std::ffi::OsStr;
+                    use std::os::windows::ffi::OsStrExt;
 
-                OsStr::new(s)
-                    .encode_wide()
-                    .chain(core::iter::once(0u16))
-                    .collect()
-            }
-            let icon_path = win_dir + "\\System32\\main.cpl";
-            let icon_path = to_utf16(&icon_path);
-            let icon_handle = unsafe { ExtractIconW(h_instance, icon_path.as_ptr(), 0) };
-            if icon_handle.is_null() {
-                #[cfg(debug_assertions)]
-                {
-                    eprintln!("Failed to extract icon");
+                    OsStr::new(s)
+                        .encode_wide()
+                        .chain(core::iter::once(0u16))
+                        .collect()
                 }
-            } else {
-                tray = tray.with_icon(tray_icon::Icon::from_handle(icon_handle as isize));
+                let icon_path = win_dir + "\\System32\\main.cpl";
+                let icon_path = to_utf16(&icon_path);
+                let icon_handle = unsafe { ExtractIconW(h_instance, icon_path.as_ptr(), 0) };
+                if icon_handle.is_null() {
+                    log_error("Failed to extract icon");
+                } else {
+                    tray = tray.with_icon(tray_icon::Icon::from_handle(icon_handle as isize));
+                }
             }
+            Err(e) => log_error(format_args!(
+                "Failed to get WINDIR environment variable to locate Windows folder: {e}"
+            )),
         }
         let tray = tray.build().unwrap();
         let event_loop = EventLoop::with_user_event().build().unwrap();
 
         MenuEvent::set_event_handler(Some({
-            let quit_id = quit_item.id().clone();
             let proxy = event_loop.create_proxy();
+            let quit_id = quit_item.id().clone();
+            #[cfg(feature = "logging")]
+            let logging_id = logging_item.id().clone();
             move |event: MenuEvent| {
                 // Note: this actually runs on the same thread as the main event
                 // loop so don't block.
@@ -253,11 +537,17 @@ fn program_start() {
                         std::process::exit(1);
                     });
                 }
+                #[cfg(feature = "logging")]
+                if event.id == logging_id {
+                    _ = proxy.send_event(UserEvent::ToggleLogging);
+                }
             }
         }));
 
         struct App {
             tray: TrayIcon,
+            #[cfg(feature = "logging")]
+            logging_item: CheckMenuItem,
         }
         impl ApplicationHandler<UserEvent> for App {
             fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
@@ -276,14 +566,28 @@ fn program_start() {
                         // On Windows 10 we need to hide the tray icon when
                         // exiting, otherwise it will remain until it is hovered
                         // on or otherwise interacted with:
-                        let _ = self.tray.set_visible(false);
+                        if let Err(e) = self.tray.set_visible(false) {
+                            log_error(e);
+                        }
                         event_loop.exit();
+                    }
+                    #[cfg(feature = "logging")]
+                    UserEvent::ToggleLogging => {
+                        let enable = !logging::is_logging();
+                        logging::set_should_log(enable);
+                        self.logging_item.set_checked(enable);
                     }
                 }
             }
         }
 
-        event_loop.run_app(&mut App { tray }).unwrap();
+        event_loop
+            .run_app(&mut App {
+                tray,
+                #[cfg(feature = "logging")]
+                logging_item,
+            })
+            .unwrap();
     }
 
     // Simples event loop replacement:

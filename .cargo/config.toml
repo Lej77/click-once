@@ -2,6 +2,16 @@
 target = "x86_64-pc-windows-msvc"
 rustflags = [
     "-C", "debuginfo=0",
+    # https://github.com/mcountryman/min-sized-rust-windows
     "-C", "link-arg=/DEBUG:NONE",
     "-C", "link-arg=/EMITPOGOPHASEINFO",
 ]
+
+# https://github.com/rust-lang/rfcs/blob/master/text/1721-crt-static.md
+# https://georgik.rocks/how-to-statically-link-rust-application-for-windows/
+# https://learn.microsoft.com/en-us/cpp/atl/benefits-and-tradeoffs-of-the-method-used-to-link-to-the-crt?view=msvc-170
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]

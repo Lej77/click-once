@@ -159,6 +159,7 @@ macro_rules! _log {
     }};
 }
 // Allow macro to be used on lines before it was declared:
+#[allow(unused_imports, reason = "might not be used when all feature flags are disabled")]
 use _log as log;
 
 #[inline(always)]

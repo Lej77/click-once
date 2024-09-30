@@ -319,9 +319,6 @@ fn program_start() {
             log_error("Mouse hook was set more than once");
 
             unsafe { UnhookWindowsHookEx(mouse_hook) };
-            if !ptr::addr_eq(e, mouse_hook) && !e.is_null() {
-                unsafe { UnhookWindowsHookEx(e) };
-            }
             std_polyfill::exit(1);
         }
 

@@ -5,7 +5,7 @@ version = "0.2.6"
 edition = "2021"
 
 [features]
-default = ["logging"]
+default = []
 
 # Create a tray icon while the program is running.
 tray = [

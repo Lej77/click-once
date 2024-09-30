@@ -170,11 +170,18 @@ pub struct MouseEvent {
 impl MouseEvent {
     pub fn log(self) {
         let stats = self.associated_stats();
-        _ = stats.total.fetch_add(1, Relaxed);
         if self.blocked {
             _ = stats.blocked.fetch_add(1, Relaxed);
+        } else {
+            _ = stats.unblocked.fetch_add(1, Relaxed);
         }
 
+        if is_logging() {
+            self.log_write();
+        }
+    }
+    #[cold]
+    fn log_write(self) {
         if self.blocked {
             log![FgColor::BLOCKED];
         }
@@ -213,13 +220,13 @@ impl MouseEvent {
 }
 
 pub struct MouseEventStats {
-    pub total: AtomicU32,
+    pub unblocked: AtomicU32,
     pub blocked: AtomicU32,
 }
 impl MouseEventStats {
     pub const fn new() -> Self {
         Self {
-            total: AtomicU32::new(0),
+            unblocked: AtomicU32::new(0),
             blocked: AtomicU32::new(0),
         }
     }
@@ -238,22 +245,22 @@ impl MouseEventStats {
         }
     }
     fn sum_stats(parts: impl Iterator<Item = (MouseButton, MouseDirection)>) -> MouseEventStats {
-        let mut total_sum = 0;
+        let mut unblocked_sum = 0;
         let mut blocked_sum = 0;
         parts
             .map(|(btn, dir)| MouseEventStats::get(btn, dir))
             .for_each(|stats| {
-                total_sum += stats.total.load(Relaxed);
+                unblocked_sum += stats.unblocked.load(Relaxed);
                 blocked_sum += stats.blocked.load(Relaxed);
             });
         MouseEventStats {
-            total: AtomicU32::new(total_sum),
+            unblocked: AtomicU32::new(unblocked_sum),
             blocked: AtomicU32::new(blocked_sum),
         }
     }
     fn log(&self) {
         let blocked = self.blocked.load(Relaxed);
-        let total = self.total.load(Relaxed).max(blocked);
+        let total = self.unblocked.load(Relaxed) + blocked;
         log![blocked, b" / ", total, b"  (",];
         if total == 0 {
             log![0];

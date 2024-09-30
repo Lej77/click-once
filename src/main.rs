@@ -83,6 +83,7 @@ mod std_polyfill {
 
     #[inline(always)]
     pub fn exit(code: i32) -> ! {
+        crate::free_mouse_hook();
         unsafe { ExitProcess(code as u32) }
     }
 
@@ -102,7 +103,11 @@ mod std_polyfill {
     //! Re-export std functions so that they have the same signatures and
     //! behavior as our `std_polyfill` has on `no_std`.
 
-    pub use std::process::exit;
+    #[inline]
+    pub fn exit(code: i32) -> ! {
+        crate::free_mouse_hook();
+        std::process::exit(code);
+    }
 
     /// Wrapper around [`std::env::args`] that skips the first argument (which
     /// would otherwise be the executable's path).
@@ -116,7 +121,7 @@ mod logging;
 #[cfg(feature = "tray")]
 mod tray;
 
-use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
 use core::*;
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::SystemInformation::GetTickCount;
@@ -159,7 +164,10 @@ macro_rules! _log {
     }};
 }
 // Allow macro to be used on lines before it was declared:
-#[allow(unused_imports, reason = "might not be used when all feature flags are disabled")]
+#[allow(
+    unused_imports,
+    reason = "might not be used when all feature flags are disabled"
+)]
 use _log as log;
 
 #[inline(always)]
@@ -277,6 +285,14 @@ fn parse_and_save_args() {
     }
 }
 
+static MOUSE_HOOK: AtomicPtr<ffi::c_void> = AtomicPtr::new(ptr::null_mut());
+fn free_mouse_hook() {
+    let mouse_hook = MOUSE_HOOK.swap(ptr::null_mut(), Relaxed);
+    if !mouse_hook.is_null() {
+        unsafe { UnhookWindowsHookEx(mouse_hook) };
+    }
+}
+
 fn program_start() {
     parse_and_save_args();
 
@@ -291,12 +307,32 @@ fn program_start() {
     #[cfg(feature = "logging")]
     logging::log_program_config();
 
-    let mouse_hook =
-        unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), ptr::null_mut(), 0) };
-    if mouse_hook.is_null() {
-        log_error("Failed to install mouse hook!");
-        std_polyfill::exit(1);
-    }
+    let guard = {
+        let mouse_hook = unsafe {
+            SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), ptr::null_mut(), 0)
+        };
+        if mouse_hook.is_null() {
+            log_error("Failed to install mouse hook!");
+            std_polyfill::exit(1);
+        }
+        if let Err(e) = MOUSE_HOOK.compare_exchange(ptr::null_mut(), mouse_hook, Relaxed, Relaxed) {
+            log_error("Mouse hook was set more than once");
+
+            unsafe { UnhookWindowsHookEx(mouse_hook) };
+            if !ptr::addr_eq(e, mouse_hook) && !e.is_null() {
+                unsafe { UnhookWindowsHookEx(e) };
+            }
+            std_polyfill::exit(1);
+        }
+
+        struct FinallyFreeHook;
+        impl Drop for FinallyFreeHook {
+            fn drop(&mut self) {
+                free_mouse_hook();
+            }
+        }
+        FinallyFreeHook
+    };
 
     #[cfg(feature = "tray")]
     tray::run_event_loop_with_tray();
@@ -309,7 +345,7 @@ fn program_start() {
         GetMessageW(&mut mem::zeroed(), ptr::null_mut(), 0, 0);
     }
 
-    unsafe { UnhookWindowsHookEx(mouse_hook) };
+    drop(guard);
 }
 
 #[cfg(feature = "std")]

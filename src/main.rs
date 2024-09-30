@@ -299,6 +299,13 @@ unsafe extern "system" fn low_level_mouse_proc(
     CallNextHookEx(ptr::null_mut(), code, wparam, lparam)
 }
 
+#[cfg_attr(
+    not(feature = "logging"),
+    expect(
+        clippy::unnecessary_filter_map,
+        reason = "Only use None case when parsing \"logging\" argument"
+    )
+)]
 fn parse_and_save_args() {
     let args = std_polyfill::args();
 

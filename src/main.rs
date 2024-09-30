@@ -280,7 +280,7 @@ fn parse_and_save_args() {
 fn program_start() {
     parse_and_save_args();
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "logging"))]
     {
         // Allow enabling logging using an environment variable:
         if std::env::var_os("CLICK_ONCE_LOGGING").is_some_and(|value| !value.is_empty()) {

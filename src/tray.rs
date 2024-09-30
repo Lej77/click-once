@@ -1,7 +1,7 @@
 #[cfg(feature = "logging")]
-use {crate::logging, tray_icon::menu::CheckMenuItem};
+use {crate::{log, logging}, tray_icon::menu::CheckMenuItem};
 
-use crate::{log, log_error};
+use crate::log_error;
 use core::sync::atomic::Ordering::Relaxed;
 use tray_icon::{
     menu::{

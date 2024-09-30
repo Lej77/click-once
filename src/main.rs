@@ -315,7 +315,7 @@ fn program_start() {
             log_error("Failed to install mouse hook!");
             std_polyfill::exit(1);
         }
-        if let Err(_) = MOUSE_HOOK.compare_exchange(ptr::null_mut(), mouse_hook, Relaxed, Relaxed) {
+        if MOUSE_HOOK.compare_exchange(ptr::null_mut(), mouse_hook, Relaxed, Relaxed).is_err() {
             log_error("Mouse hook was set more than once");
 
             unsafe { UnhookWindowsHookEx(mouse_hook) };

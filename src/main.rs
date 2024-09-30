@@ -170,7 +170,7 @@ macro_rules! _log {
 )]
 use _log as log;
 
-#[inline(always)]
+#[inline(always)] // <- so that the argument can be removed when this is a noop
 fn log_error(_error: impl core::fmt::Display) {
     #[cfg(all(feature = "std", debug_assertions, not(feature = "logging")))]
     {
@@ -302,7 +302,7 @@ unsafe extern "system" fn low_level_mouse_proc(
 fn parse_and_save_args() {
     let args = std_polyfill::args();
 
-    let mut args = args.filter_map(|arg| {
+    let mut args = args.enumerate().filter_map(|(ix, arg)| {
         #[cfg(feature = "logging")]
         if arg.trim().eq_ignore_ascii_case("logging") {
             logging::set_should_log(true);
@@ -310,7 +310,13 @@ fn parse_and_save_args() {
         }
         Some(
             arg.parse::<u32>()
-                .inspect_err(|e| log_error(e))
+                .inspect_err(|e| {
+                    log_error(format_args!(
+                        "CLI argument \"{arg}\" at position {} is invalid, \
+                        could not parse it as positive integer: {e}",
+                        ix + 1
+                    ))
+                })
                 .unwrap_or_else(|_| std_polyfill::exit(2)),
         )
     });

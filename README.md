@@ -18,6 +18,8 @@ It basically hijacks a global hook into the Windows's low level mouse thread inp
 
 If the string `logging` (case insensitive) is provided as one of the arguments then a console window will be opened where click information will be printed. (Requires the program to have been compiled with the `logging` Cargo feature.)
 
+If the process exits immediately you can still see logs for invalid arguments by specifying the `logging` argument as the first argument or by setting the `CLICK_ONCE_LOGGING` environment variable to a non-empty string. (Note that the environment variable approach requires compiling with the `tray` or `std` Cargo feature.) You might need to start the program from a terminal so that the log window doesn't close immediately.
+
 ## Build
 
 - [Install Rust](https://www.rust-lang.org/tools/install), on Linux or Windows Subsystem for Linux you can do:

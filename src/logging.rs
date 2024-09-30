@@ -5,8 +5,7 @@
 use crate::{log, log_error};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering::*};
 use windows_sys::Win32::System::Console::{
-    AllocConsole, FreeConsole, GetStdHandle, SetConsoleTextAttribute, WriteConsoleA,
-    FOREGROUND_BLUE, FOREGROUND_GREEN, FOREGROUND_INTENSITY, FOREGROUND_RED, STD_OUTPUT_HANDLE,
+    AllocConsole, AttachConsole, FreeConsole, GetStdHandle, SetConsoleTextAttribute, WriteConsoleA, ATTACH_PARENT_PROCESS, FOREGROUND_BLUE, FOREGROUND_GREEN, FOREGROUND_INTENSITY, FOREGROUND_RED, STD_OUTPUT_HANDLE
 };
 
 static SHOULD_LOG: AtomicBool = AtomicBool::new(cfg!(all(debug_assertions, feature = "std")));
@@ -20,13 +19,21 @@ pub fn is_logging() -> bool {
 /// # References
 ///
 /// - <https://learn.microsoft.com/en-us/windows/console/allocconsole>
+/// - <https://learn.microsoft.com/en-us/windows/console/attachconsole>
+/// - <https://stackoverflow.com/questions/432832/what-is-the-different-between-api-functions-allocconsole-and-attachconsole-1>
 pub fn set_should_log(enabled: bool) {
     if SHOULD_LOG
         .compare_exchange(!enabled, enabled, AcqRel, Relaxed)
         .is_ok()
     {
         let result = if enabled {
-            unsafe { AllocConsole() }
+            let result = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+            if result == 0 {
+                // Failed to attach to existing console, so create a new one:
+                unsafe { AllocConsole() }
+            } else {
+                result
+            }
         } else {
             unsafe { FreeConsole() }
         };

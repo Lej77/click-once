@@ -254,18 +254,20 @@ impl MouseEventStats {
     fn log(&self) {
         let blocked = self.blocked.load(Relaxed);
         let total = self.total.load(Relaxed).max(blocked);
-        log![
-            blocked,
-            b" / ",
-            total,
-            b"  (",
-            if total == 0 {
-                0
-            } else {
-                ((blocked as u64 * 10_000) / (total as u64 * 100)) as u32
-            },
-            b"%)",
-        ];
+        log![blocked, b" / ", total, b"  (",];
+        if total == 0 {
+            log![0];
+        } else {
+            let decimals = 4;
+            let tens = 10_u64.pow(decimals);
+            let percent = (blocked as u64 * 100 * 100 * tens) / (total as u64 * 100);
+
+            log![(percent / tens) as u32];
+            if decimals > 0 {
+                log![b".", (percent % tens) as u32,];
+            }
+        }
+        log![b"%)"];
     }
 }
 

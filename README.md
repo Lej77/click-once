@@ -11,12 +11,12 @@ It basically hijacks a global hook into the Windows's low level mouse thread inp
 ## Run
 
 ```bash
-./click-once.exe <delay_left_but> <delay_right_but> <logging>
+./click-once.exe <delay_left_button> <delay_right_button> <delay_middle_button> <logging>
 ```
 
-`delay`s are in ms and can be adjusted. The default is 30ms for `delay_left_but` and 0 for `delay_right_but` (disabled).
+`delay`s are in ms and can be adjusted. The default is 30ms for `delay_left_button` and 0 (disabled) for `delay_right_button` as well as `<delay_middle_button>`.
 
-If `logging` (case insensitive) is provided as one of the arguments then a console window will be opened where click information will be printed. (Requires the program to have been compiled with the `logging` Cargo feature.)
+If the string `logging` (case insensitive) is provided as one of the arguments then a console window will be opened where click information will be printed. (Requires the program to have been compiled with the `logging` Cargo feature.)
 
 ## Build
 

@@ -1,5 +1,8 @@
 #[cfg(feature = "logging")]
-use {crate::{log, logging}, tray_icon::menu::CheckMenuItem};
+use {
+    crate::{log, logging},
+    tray_icon::menu::CheckMenuItem,
+};
 
 use crate::log_error;
 use core::sync::atomic::Ordering::Relaxed;
@@ -55,12 +58,13 @@ impl TrayApp {
 
         let mut tray = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
+            // Note: there is a max length for the tooltip, more will be truncated
             .with_tooltip({
                 use std::fmt::Write;
 
                 let mut tooltip = "click-once".to_owned();
                 {
-                    tooltip.push_str("\r\nLeft Click: ");
+                    tooltip.push_str("\r\nLeft: ");
                     let threshold_left = crate::THRESHOLD_LM.load(Relaxed);
                     if threshold_left == 0 {
                         tooltip.push_str("Disabled");
@@ -69,12 +73,21 @@ impl TrayApp {
                     }
                 }
                 {
-                    tooltip.push_str("\r\nRight Click: ");
+                    tooltip.push_str("\r\nRight: ");
                     let threshold_right = crate::THRESHOLD_RM.load(Relaxed);
                     if threshold_right == 0 {
                         tooltip.push_str("Disabled");
                     } else {
                         write!(tooltip, "{} ms", threshold_right).unwrap();
+                    }
+                }
+                {
+                    tooltip.push_str("\r\nMiddle: ");
+                    let threshold_middle = crate::THRESHOLD_MM.load(Relaxed);
+                    if threshold_middle == 0 {
+                        tooltip.push_str("Disabled");
+                    } else {
+                        write!(tooltip, "{} ms", threshold_middle).unwrap();
                     }
                 }
                 tooltip

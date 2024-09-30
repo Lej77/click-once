@@ -127,7 +127,7 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, WH_MOUSE_LL, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 macro_rules! log_mouse_event {
@@ -184,13 +184,24 @@ fn log_error(_error: impl core::fmt::Display) {
     }
 }
 
+/// If a left mouse button event happens faster than this many milliseconds
+/// then it is suppressed.
 static THRESHOLD_LM: AtomicU32 = AtomicU32::new(30);
+
+/// If a right mouse button event happens faster than this many milliseconds
+/// then it is suppressed.
 static THRESHOLD_RM: AtomicU32 = AtomicU32::new(0);
+
+/// If a middle mouse button event happens faster than this many milliseconds
+/// then it is suppressed.
+static THRESHOLD_MM: AtomicU32 = AtomicU32::new(0);
 
 const WM_LBUTTONDOWNU: usize = WM_LBUTTONDOWN as _;
 const WM_LBUTTONUPU: usize = WM_LBUTTONUP as _;
 const WM_RBUTTONDOWNU: usize = WM_RBUTTONDOWN as _;
 const WM_RBUTTONUPU: usize = WM_RBUTTONUP as _;
+const WM_MBUTTONDOWNU: usize = WM_MBUTTONDOWN as _;
+const WM_MBUTTONUPU: usize = WM_MBUTTONUP as _;
 
 unsafe extern "system" fn low_level_mouse_proc(
     code: i32,
@@ -201,6 +212,8 @@ unsafe extern "system" fn low_level_mouse_proc(
     static LAST_UP_L: AtomicU32 = AtomicU32::new(0);
     static LAST_DOWN_R: AtomicU32 = AtomicU32::new(0);
     static LAST_UP_R: AtomicU32 = AtomicU32::new(0);
+    static LAST_DOWN_M: AtomicU32 = AtomicU32::new(0);
+    static LAST_UP_M: AtomicU32 = AtomicU32::new(0);
 
     if code >= 0 {
         match wparam {
@@ -254,6 +267,31 @@ unsafe extern "system" fn low_level_mouse_proc(
                     log_mouse_event!(Right, Up, false, time_since_last_event);
                 }
             }
+            WM_MBUTTONDOWNU => {
+                let tick = GetTickCount();
+                let time_since_last_event =
+                    tick.saturating_sub(LAST_DOWN_M.load(Relaxed).max(LAST_UP_M.load(Relaxed)));
+
+                if time_since_last_event < THRESHOLD_MM.load(Relaxed) {
+                    log_mouse_event!(Middle, Down, true, time_since_last_event);
+                    return 1;
+                } else {
+                    LAST_DOWN_M.store(tick, Relaxed);
+                    log_mouse_event!(Middle, Down, false, time_since_last_event);
+                }
+            }
+            WM_MBUTTONUPU => {
+                let tick = GetTickCount();
+                let time_since_last_event = tick.saturating_sub(LAST_UP_M.load(Relaxed));
+
+                if time_since_last_event < THRESHOLD_MM.load(Relaxed) {
+                    log_mouse_event!(Middle, Up, true, time_since_last_event);
+                    return 1;
+                } else {
+                    LAST_UP_M.store(tick, Relaxed);
+                    log_mouse_event!(Middle, Up, false, time_since_last_event);
+                }
+            }
             _ => (),
         }
     }
@@ -283,6 +321,15 @@ fn parse_and_save_args() {
     if let Some(arg_rm) = args.next() {
         THRESHOLD_RM.store(arg_rm, Relaxed);
     }
+    if let Some(arg_mm) = args.next() {
+        THRESHOLD_MM.store(arg_mm, Relaxed);
+    }
+    if let Some(extra_arg) = args.next() {
+        log_error(format_args!(
+            "Too many integers provided as arguments, could not use: {extra_arg}"
+        ));
+        std_polyfill::exit(2);
+    }
 }
 
 static MOUSE_HOOK: AtomicPtr<ffi::c_void> = AtomicPtr::new(ptr::null_mut());
@@ -294,8 +341,6 @@ fn free_mouse_hook() {
 }
 
 fn program_start() {
-    parse_and_save_args();
-
     #[cfg(all(feature = "std", feature = "logging"))]
     {
         // Allow enabling logging using an environment variable:
@@ -303,6 +348,8 @@ fn program_start() {
             logging::set_should_log(true);
         }
     }
+
+    parse_and_save_args();
 
     #[cfg(feature = "logging")]
     logging::log_program_config();
@@ -315,7 +362,10 @@ fn program_start() {
             log_error("Failed to install mouse hook!");
             std_polyfill::exit(1);
         }
-        if MOUSE_HOOK.compare_exchange(ptr::null_mut(), mouse_hook, Relaxed, Relaxed).is_err() {
+        if MOUSE_HOOK
+            .compare_exchange(ptr::null_mut(), mouse_hook, Relaxed, Relaxed)
+            .is_err()
+        {
             log_error("Mouse hook was set more than once");
 
             unsafe { UnhookWindowsHookEx(mouse_hook) };

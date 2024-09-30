@@ -61,6 +61,16 @@ pub fn log_program_config() {
         } else {
             b""
         },
+        b"\r\nMiddle Click: ",
+        FgColor::TIME,
+        crate::THRESHOLD_MM.load(Relaxed),
+        b" ms",
+        FgColor::Reset,
+        if crate::THRESHOLD_MM.load(Relaxed) == 0 {
+            b" (Disabled)".as_slice()
+        } else {
+            b""
+        },
         b"\r\n\r\n",
     ];
 }
@@ -89,10 +99,13 @@ pub fn log_current_stats() {
         log![b"\r\n"];
     }
     fn log_stats_for_button(button: MouseButton) {
+        #[rustfmt::skip]
         match button {
-            MouseButton::Left => log![b"\tLeft button:  "],
-            MouseButton::Right => log![b"\tRight button: "],
-        }
+            MouseButton::Left   => log![b"\tLeft button:   "],
+            MouseButton::Right  => log![b"\tRight button:  "],
+            MouseButton::Middle => log![b"\tMiddle button: "],
+        };
+
         let all_dirs = MouseEventStats::sum_stats(
             [button]
                 .into_iter()
@@ -103,10 +116,11 @@ pub fn log_current_stats() {
         log![b"\r\n"];
     }
     fn log_stats_for_button_with_direction(button: MouseButton, direction: MouseDirection) {
+        #[rustfmt::skip]
         match direction {
             MouseDirection::Down => log![b"\t\tDown event: "],
-            MouseDirection::Up => log![b"\t\tUp event:   "],
-        }
+            MouseDirection::Up   => log![b"\t\tUp event:   "],
+        };
         let stats = MouseEventStats::get(button, direction);
         stats.log();
         log![b"\r\n"];
@@ -153,10 +167,11 @@ impl MouseDirection {
 pub enum MouseButton {
     Left,
     Right,
+    Middle,
 }
 impl MouseButton {
     pub fn all() -> &'static [Self] {
-        all_variants![Left, Right]
+        all_variants![Left, Right, Middle]
     }
 }
 
@@ -191,6 +206,8 @@ impl MouseEvent {
             (MouseButton::Left, MouseDirection::Down) => log![b"Left click "],
             (MouseButton::Right, MouseDirection::Up) => log![b"\tRight button up event "],
             (MouseButton::Right, MouseDirection::Down) => log![b"Right click "],
+            (MouseButton::Middle, MouseDirection::Up) => log![b"\tMiddle button up event "],
+            (MouseButton::Middle, MouseDirection::Down) => log![b"Middle click "],
         }
 
         if self.blocked {
@@ -242,6 +259,8 @@ impl MouseEventStats {
             (MouseButton::Left, MouseDirection::Down) => define_stats!(),
             (MouseButton::Right, MouseDirection::Up) => define_stats!(),
             (MouseButton::Right, MouseDirection::Down) => define_stats!(),
+            (MouseButton::Middle, MouseDirection::Up) => define_stats!(),
+            (MouseButton::Middle, MouseDirection::Down) => define_stats!(),
         }
     }
     fn sum_stats(parts: impl Iterator<Item = (MouseButton, MouseDirection)>) -> MouseEventStats {

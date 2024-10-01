@@ -1,14 +1,5 @@
 //! Implements logging by writing to a console window, optionally creating
-//! such a window if it doesn't exist (which it only does in debug builds
-//! when `std` is enabled since we then use the default `console` subsystem).
-
-use crate::{log, log_error};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering::*};
-use windows_sys::Win32::System::Console::{
-    AllocConsole, AttachConsole, FreeConsole, GetStdHandle, SetConsoleTextAttribute, WriteConsoleA,
-    ATTACH_PARENT_PROCESS, FOREGROUND_BLUE, FOREGROUND_GREEN, FOREGROUND_INTENSITY, FOREGROUND_RED,
-    STD_OUTPUT_HANDLE,
-};
+//! such a window if it doesn't exist.
 
 /// Create an array of [`LogValue`] by calling `from` on the provided items.
 /// Won't actually log anything.
@@ -20,6 +11,164 @@ macro_rules! log_array {
     };
 }
 
+#[cfg(feature = "tray")] // Note: implies "std" feature
+pub mod stats {
+    //! Track statistics and allow printing them. This module is only useful
+    //! when we have a system tray since otherwise there is no way to interact
+    //! with the program and request the statistics.
+
+    use super::{LogValue, MouseButton, MouseDirection};
+    use core::sync::atomic::{AtomicU32, Ordering::*};
+
+    type LogWriteCallback<'a> = &'a mut dyn FnMut(LogValue<'_>);
+
+    pub struct MouseEventStats {
+        pub unblocked: AtomicU32,
+        pub blocked: AtomicU32,
+    }
+    impl MouseEventStats {
+        pub const fn new() -> Self {
+            Self {
+                unblocked: AtomicU32::new(0),
+                blocked: AtomicU32::new(0),
+            }
+        }
+        #[inline(always)]
+        pub fn increment(&self, blocked: bool) {
+            if blocked {
+                _ = self.blocked.fetch_add(1, Relaxed);
+            } else {
+                _ = self.unblocked.fetch_add(1, Relaxed);
+            }
+        }
+        pub fn get(button: MouseButton, direction: MouseDirection) -> &'static Self {
+            macro_rules! define_stats {
+                () => {{
+                    static STATS: MouseEventStats = MouseEventStats::new();
+                    &STATS
+                }};
+            }
+            match (button, direction) {
+                (MouseButton::Left, MouseDirection::Up) => define_stats!(),
+                (MouseButton::Left, MouseDirection::Down) => define_stats!(),
+                (MouseButton::Right, MouseDirection::Up) => define_stats!(),
+                (MouseButton::Right, MouseDirection::Down) => define_stats!(),
+                (MouseButton::Middle, MouseDirection::Up) => define_stats!(),
+                (MouseButton::Middle, MouseDirection::Down) => define_stats!(),
+            }
+        }
+        fn sum_stats(
+            parts: impl Iterator<Item = (MouseButton, MouseDirection)>,
+        ) -> MouseEventStats {
+            let mut unblocked_sum = 0;
+            let mut blocked_sum = 0;
+            parts
+                .map(|(btn, dir)| MouseEventStats::get(btn, dir))
+                .for_each(|stats| {
+                    unblocked_sum += stats.unblocked.load(Relaxed);
+                    blocked_sum += stats.blocked.load(Relaxed);
+                });
+            MouseEventStats {
+                unblocked: AtomicU32::new(unblocked_sum),
+                blocked: AtomicU32::new(blocked_sum),
+            }
+        }
+        fn log(&self, log_write: LogWriteCallback) {
+            let blocked = self.blocked.load(Relaxed);
+            let total = self.unblocked.load(Relaxed) + blocked;
+            log_array![blocked, b" / ", total, b"  (",]
+                .into_iter()
+                .for_each(&mut *log_write);
+            if total == 0 {
+                log_write(LogValue::Number(0));
+            } else {
+                let decimals = 4;
+                let tens = 10_u64.pow(decimals);
+                let percent = (blocked as u64 * 100 * 100 * tens) / (total as u64 * 100);
+
+                log_write(((percent / tens) as u32).into());
+                if decimals > 0 {
+                    log_write(b".".into());
+                    log_write(((percent % tens) as u32).into());
+                }
+            }
+            log_write(b"%)".into());
+        }
+    }
+
+    /// This function prints statistics about blocked clicks when a logging session
+    /// is started via the tray icon.
+    pub fn log_current_stats(log_write: LogWriteCallback) {
+        fn log_stats_total_clicks(log_write: LogWriteCallback) {
+            let sum =
+                MouseEventStats::sum_stats(MouseButton::all().iter().copied().flat_map(|button| {
+                    [button]
+                        .into_iter()
+                        .cycle()
+                        .zip(MouseDirection::all().iter().copied())
+                }));
+
+            log_write(b"Total blocked events: ".into());
+            sum.log(log_write);
+            log_write(b"\r\n".into());
+        }
+        fn log_stats_for_button(button: MouseButton, log_write: LogWriteCallback) {
+            let button_text = match button {
+                MouseButton::Left => b"\tLeft button:   ",
+                MouseButton::Right => b"\tRight button:  ",
+                MouseButton::Middle => b"\tMiddle button: ",
+            };
+            log_write(button_text.into());
+
+            let all_dirs = MouseEventStats::sum_stats(
+                [button]
+                    .into_iter()
+                    .cycle()
+                    .zip(MouseDirection::all().iter().copied()),
+            );
+            all_dirs.log(log_write);
+            log_write(b"\r\n".into());
+        }
+        fn log_stats_for_button_with_direction(
+            button: MouseButton,
+            direction: MouseDirection,
+            log_write: LogWriteCallback,
+        ) {
+            let dir_text = match direction {
+                MouseDirection::Down => b"\t\tDown event: ",
+                MouseDirection::Up => b"\t\tUp event:   ",
+            };
+            log_write(dir_text.into());
+            let stats = MouseEventStats::get(button, direction);
+            stats.log(log_write);
+            log_write(b"\r\n".into());
+        }
+
+        log_write(b"\r\nStatistics:\r\n".into());
+
+        log_stats_total_clicks(log_write);
+        for &button in MouseButton::all() {
+            log_stats_for_button(button, log_write);
+            for &dir in MouseDirection::all() {
+                log_stats_for_button_with_direction(button, dir, log_write);
+            }
+        }
+
+        log_write(b"\r\n\r\n\r\n".into());
+    }
+}
+
+use crate::{log, log_error};
+use core::sync::atomic::{AtomicBool, Ordering::*};
+use windows_sys::Win32::System::Console::{
+    AllocConsole, AttachConsole, FreeConsole, GetStdHandle, SetConsoleTextAttribute, WriteConsoleA,
+    ATTACH_PARENT_PROCESS, FOREGROUND_BLUE, FOREGROUND_GREEN, FOREGROUND_INTENSITY, FOREGROUND_RED,
+    STD_OUTPUT_HANDLE,
+};
+
+/// The console window only exists in debug builds with `std` feature since that
+/// is when we disable the: windows_subsystem = `windows` (also see the build
+/// script were we also specify this subsystem).
 static SHOULD_LOG: AtomicBool = AtomicBool::new(cfg!(all(debug_assertions, feature = "std")));
 
 pub fn is_logging() -> bool {
@@ -58,6 +207,7 @@ pub fn set_should_log(enabled: bool) {
     }
 }
 
+/// Get info about the current program configuration. Lazy so does nothing by itself.
 pub fn log_program_config() -> [LogValue<'static>; 19] {
     log_array![
         b"\r\nProgram Config:\r\nLeft Click:  ",
@@ -94,70 +244,6 @@ pub fn log_program_config() -> [LogValue<'static>; 19] {
     ]
 }
 
-/// This function prints statistics about blocked clicks when a logging session
-/// is started via the tray icon.
-#[cfg_attr(
-    not(feature = "tray"),
-    expect(
-        dead_code,
-        reason = "Currently the only way to trigger statistics printing is via the tray."
-    )
-)]
-pub fn log_current_stats() {
-    fn log_stats_total_clicks() {
-        let sum =
-            MouseEventStats::sum_stats(MouseButton::all().iter().copied().flat_map(|button| {
-                [button]
-                    .into_iter()
-                    .cycle()
-                    .zip(MouseDirection::all().iter().copied())
-            }));
-
-        log![b"Total blocked events: ",];
-        sum.log();
-        log![b"\r\n"];
-    }
-    fn log_stats_for_button(button: MouseButton) {
-        #[rustfmt::skip]
-        match button {
-            MouseButton::Left   => log![b"\tLeft button:   "],
-            MouseButton::Right  => log![b"\tRight button:  "],
-            MouseButton::Middle => log![b"\tMiddle button: "],
-        };
-
-        let all_dirs = MouseEventStats::sum_stats(
-            [button]
-                .into_iter()
-                .cycle()
-                .zip(MouseDirection::all().iter().copied()),
-        );
-        all_dirs.log();
-        log![b"\r\n"];
-    }
-    fn log_stats_for_button_with_direction(button: MouseButton, direction: MouseDirection) {
-        #[rustfmt::skip]
-        match direction {
-            MouseDirection::Down => log![b"\t\tDown event: "],
-            MouseDirection::Up   => log![b"\t\tUp event:   "],
-        };
-        let stats = MouseEventStats::get(button, direction);
-        stats.log();
-        log![b"\r\n"];
-    }
-
-    log![b"\r\nStatistics:\r\n",];
-
-    log_stats_total_clicks();
-    for &button in MouseButton::all() {
-        log_stats_for_button(button);
-        for &dir in MouseDirection::all() {
-            log_stats_for_button_with_direction(button, dir);
-        }
-    }
-
-    log![b"\r\n\r\n\r\n"];
-}
-
 macro_rules! all_variants {
     ($($variant:ident),* $(,)?) => {{
         _ = |__enum: Self| {
@@ -177,6 +263,7 @@ pub enum MouseDirection {
     Down,
 }
 impl MouseDirection {
+    #[allow(dead_code, reason = "only used by certain features")]
     pub fn all() -> &'static [Self] {
         all_variants![Up, Down]
     }
@@ -189,6 +276,7 @@ pub enum MouseButton {
     Middle,
 }
 impl MouseButton {
+    #[allow(dead_code, reason = "only used by certain features")]
     pub fn all() -> &'static [Self] {
         all_variants![Left, Right, Middle]
     }
@@ -203,12 +291,8 @@ pub struct MouseEvent {
 }
 impl MouseEvent {
     pub fn log(self) {
-        let stats = self.associated_stats();
-        if self.blocked {
-            _ = stats.blocked.fetch_add(1, Relaxed);
-        } else {
-            _ = stats.unblocked.fetch_add(1, Relaxed);
-        }
+        #[cfg(feature = "tray")]
+        stats::MouseEventStats::get(self.button, self.direction).increment(self.blocked);
 
         if is_logging() {
             self.log_write();
@@ -250,70 +334,6 @@ impl MouseEvent {
             ];
         }
     }
-    fn associated_stats(&self) -> &'static MouseEventStats {
-        MouseEventStats::get(self.button, self.direction)
-    }
-}
-
-pub struct MouseEventStats {
-    pub unblocked: AtomicU32,
-    pub blocked: AtomicU32,
-}
-impl MouseEventStats {
-    pub const fn new() -> Self {
-        Self {
-            unblocked: AtomicU32::new(0),
-            blocked: AtomicU32::new(0),
-        }
-    }
-    pub fn get(button: MouseButton, direction: MouseDirection) -> &'static Self {
-        macro_rules! define_stats {
-            () => {{
-                static STATS: MouseEventStats = MouseEventStats::new();
-                &STATS
-            }};
-        }
-        match (button, direction) {
-            (MouseButton::Left, MouseDirection::Up) => define_stats!(),
-            (MouseButton::Left, MouseDirection::Down) => define_stats!(),
-            (MouseButton::Right, MouseDirection::Up) => define_stats!(),
-            (MouseButton::Right, MouseDirection::Down) => define_stats!(),
-            (MouseButton::Middle, MouseDirection::Up) => define_stats!(),
-            (MouseButton::Middle, MouseDirection::Down) => define_stats!(),
-        }
-    }
-    fn sum_stats(parts: impl Iterator<Item = (MouseButton, MouseDirection)>) -> MouseEventStats {
-        let mut unblocked_sum = 0;
-        let mut blocked_sum = 0;
-        parts
-            .map(|(btn, dir)| MouseEventStats::get(btn, dir))
-            .for_each(|stats| {
-                unblocked_sum += stats.unblocked.load(Relaxed);
-                blocked_sum += stats.blocked.load(Relaxed);
-            });
-        MouseEventStats {
-            unblocked: AtomicU32::new(unblocked_sum),
-            blocked: AtomicU32::new(blocked_sum),
-        }
-    }
-    fn log(&self) {
-        let blocked = self.blocked.load(Relaxed);
-        let total = self.unblocked.load(Relaxed) + blocked;
-        log![blocked, b" / ", total, b"  (",];
-        if total == 0 {
-            log![0];
-        } else {
-            let decimals = 4;
-            let tens = 10_u64.pow(decimals);
-            let percent = (blocked as u64 * 100 * 100 * tens) / (total as u64 * 100);
-
-            log![(percent / tens) as u32];
-            if decimals > 0 {
-                log![b".", (percent % tens) as u32,];
-            }
-        }
-        log![b"%)"];
-    }
 }
 
 /// A value that can be written to a console window.
@@ -327,7 +347,7 @@ pub enum LogValue<'a> {
     Color(FgColor),
 }
 impl<'a> LogValue<'a> {
-    #[cfg(feature = "std")]
+    #[cfg(feature = "tray")]
     pub fn write_to_string(self, buffer: &mut String) {
         match self {
             LogValue::Number(number) => {

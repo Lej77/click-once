@@ -19,6 +19,7 @@ tray = [
 logging = ["dep:itoa", "windows-sys/Win32_System_Console"]
 
 # Build with Rust standard library available, simplifies code but increases the binary size.
+# Note: the no_std code is carefully written to never panic or use core::fmt to not bloat the size.
 std = []
 
 

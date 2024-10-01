@@ -199,7 +199,7 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                 logging::log_program_config()
                     .iter()
                     .for_each(|value| value.write());
-                logging::log_current_stats();
+                logging::stats::log_current_stats(&mut |v| v.write());
             }
             #[cfg(feature = "logging")]
             UserEvent::ShowStats => {
@@ -209,6 +209,7 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                     logging::log_program_config()
                         .iter()
                         .for_each(|value| value.write_to_string(&mut text));
+                    logging::stats::log_current_stats(&mut |v| v.write_to_string(&mut text));
                 }
                 let text = to_utf16(&text);
                 // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messageboxw

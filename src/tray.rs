@@ -52,17 +52,17 @@ impl TrayApp {
         let h_instance = unsafe { GetModuleHandleW(core::ptr::null()) };
 
         let tray_menu = Menu::new();
-        let quit_item = MenuItem::new("Quit", true, Some(Accelerator::new(None, Code::KeyQ)));
+        let quit_item = MenuItem::new("&Quit", true, Some(Accelerator::new(None, Code::KeyQ)));
         #[cfg(feature = "logging")]
         let logging_item = CheckMenuItem::new(
-            "Toggle Logging",
+            "Toggle &Logging",
             true,
             logging::is_logging(),
             Some(Accelerator::new(None, Code::KeyL)),
         );
         #[cfg(feature = "logging")]
         let show_stats: MenuItem = MenuItem::new(
-            "View Statistics",
+            "View &Statistics",
             true,
             Some(Accelerator::new(None, Code::KeyS)),
         );

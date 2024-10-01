@@ -365,7 +365,9 @@ fn program_start() {
     parse_and_save_args();
 
     #[cfg(feature = "logging")]
-    logging::log_program_config();
+    logging::log_program_config()
+        .iter()
+        .for_each(|value| value.write());
 
     let guard = {
         let mouse_hook = unsafe {

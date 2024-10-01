@@ -5,8 +5,20 @@
 use crate::{log, log_error};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering::*};
 use windows_sys::Win32::System::Console::{
-    AllocConsole, AttachConsole, FreeConsole, GetStdHandle, SetConsoleTextAttribute, WriteConsoleA, ATTACH_PARENT_PROCESS, FOREGROUND_BLUE, FOREGROUND_GREEN, FOREGROUND_INTENSITY, FOREGROUND_RED, STD_OUTPUT_HANDLE
+    AllocConsole, AttachConsole, FreeConsole, GetStdHandle, SetConsoleTextAttribute, WriteConsoleA,
+    ATTACH_PARENT_PROCESS, FOREGROUND_BLUE, FOREGROUND_GREEN, FOREGROUND_INTENSITY, FOREGROUND_RED,
+    STD_OUTPUT_HANDLE,
 };
+
+/// Create an array of [`LogValue`] by calling `from` on the provided items.
+/// Won't actually log anything.
+macro_rules! log_array {
+    ($($value:expr),* $(,)?) => {
+        [
+            $($crate::logging::LogValue::from($value),)*
+        ]
+    };
+}
 
 static SHOULD_LOG: AtomicBool = AtomicBool::new(cfg!(all(debug_assertions, feature = "std")));
 
@@ -46,8 +58,8 @@ pub fn set_should_log(enabled: bool) {
     }
 }
 
-pub fn log_program_config() {
-    log![
+pub fn log_program_config() -> [LogValue<'static>; 19] {
+    log_array![
         b"\r\nProgram Config:\r\nLeft Click:  ",
         FgColor::TIME,
         crate::THRESHOLD_LM.load(Relaxed),
@@ -79,7 +91,7 @@ pub fn log_program_config() {
             b""
         },
         b"\r\n\r\n",
-    ];
+    ]
 }
 
 /// This function prints statistics about blocked clicks when a logging session
@@ -306,6 +318,7 @@ impl MouseEventStats {
 
 /// A value that can be written to a console window.
 #[derive(Clone, Copy)]
+#[must_use = "Call write() to actually log something"]
 pub enum LogValue<'a> {
     /// A number.
     Number(u32),
@@ -314,6 +327,24 @@ pub enum LogValue<'a> {
     Color(FgColor),
 }
 impl<'a> LogValue<'a> {
+    #[cfg(feature = "std")]
+    pub fn write_to_string(self, buffer: &mut String) {
+        match self {
+            LogValue::Number(number) => {
+                let mut num_buf = itoa::Buffer::new();
+                buffer.push_str(num_buf.format(number));
+            }
+            LogValue::Text(text) => {
+                buffer.push_str(core::str::from_utf8(text).unwrap_or_else(|e| {
+                    log_error(format_args!(
+                        "LogValue::Text should only contain ASCII: {e}"
+                    ));
+                    crate::std_polyfill::exit(1);
+                }));
+            }
+            LogValue::Color(_) => {}
+        }
+    }
     /// Write this value to the console.
     ///
     /// # References
@@ -322,6 +353,9 @@ impl<'a> LogValue<'a> {
     /// - <https://learn.microsoft.com/en-us/windows/console/writeconsole>
     /// - <https://docs.rs/windows-sys/0.52.0/windows_sys/Win32/System/Console/fn.WriteConsoleA.html>
     pub fn write(self) {
+        if let LogValue::Text(b"") = self {
+            return;
+        }
         if !SHOULD_LOG.load(Acquire) {
             return;
         }

@@ -79,17 +79,37 @@ pub mod stats {
             log_array![blocked, b" / ", total, b"  (",]
                 .into_iter()
                 .for_each(&mut *log_write);
+
+            const MAX_TRAILING_DIGITS: usize = (u32::MAX.ilog10() + 1) as usize;
+            const DOT_AND_PADDING: &[u8; 1 + MAX_TRAILING_DIGITS] = b".0000000000";
+            let decimals: u32 = 4;
+
             if total == 0 {
                 log_write(LogValue::Number(0));
+                if decimals > 0 {
+                    log_write(DOT_AND_PADDING[..(1 + decimals) as usize].into());
+                }
             } else {
-                let decimals = 4;
                 let tens = 10_u64.pow(decimals);
                 let percent = (blocked as u64 * 100 * 100 * tens) / (total as u64 * 100);
 
                 log_write(((percent / tens) as u32).into());
                 if decimals > 0 {
-                    log_write(b".".into());
-                    log_write(((percent % tens) as u32).into());
+                    // Note: number formatting might print less than `decimals`
+                    // digits if leading ones are zero, therefore we add padding
+                    // with `0` character to not misrepresent the number. The
+                    // result should be that the printed number always has
+                    // `decimals` number of digits after the decimal sign.
+                    let after_dot = (percent % tens) as u32;
+                    let digits = if after_dot == 0 {
+                        // We still print 0 in this case, so one digit will be printed:
+                        1
+                    } else {
+                        after_dot.ilog10() + 1
+                    };
+                    let missing_digits = decimals.saturating_sub(digits) as usize;
+                    log_write(DOT_AND_PADDING[..1 + missing_digits].into());
+                    log_write(after_dot.into());
                 }
             }
             log_write(b"%)".into());

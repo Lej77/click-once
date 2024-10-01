@@ -36,6 +36,8 @@ If the process exits immediately you can still see logs for invalid arguments by
   cargo build --release
   ```
 
+  Then you can find the executable at `./target/x86_64-pc-windows-msvc/release/click-once.exe`
+
   - Alternatively build with `tray` and `logging` Cargo features:
 
     ```bash

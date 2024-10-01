@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "fill-labs.dependi",
+        "tamasfe.even-better-toml",
+        "stkb.rewrap",
+        "rust-lang.rust-analyzer"
+    ]
+}

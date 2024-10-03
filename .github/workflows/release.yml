@@ -1,33 +1,175 @@
-on: push
+name: Release
 
+on:
+  push:
+    tags: ['v*']
 
 jobs:
-  release:
-    timeout-minutes: 10
-    name: release
+  build-basic:
+    name: Build without any extra features
     runs-on: windows-latest
-
     steps:
-      - id: get_repository_name
-        run: echo ::set-output name=REPOSITORY_NAME::$(echo "$GITHUB_REPOSITORY" | awk -F / '{print $2}' | sed -e "s/:refs//")
-        shell: bash
-      - name: Get current date
-        id: date
-        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
-      - uses: actions-rs/toolchain@v1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      #- name: Configure cache
+      #  uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --no-default-features
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: x86_64-pc-windows-msvc
-      - uses: actions/checkout@v2
-      - name: Compile and release
-        run: cargo build --release
-      - name: Upload binary to release
-        uses: svenstaro/upload-release-action@v1-release
+          name: basic-release-binary
+          path: target/x86_64-pc-windows-msvc/release/click-once.exe
+
+  build-logging:
+    name: Build with logging feature
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      #- name: Configure cache
+      #  uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --no-default-features --features=logging
+
+      - name: Rename file
+        run: mv target/x86_64-pc-windows-msvc/release/click-once.exe click-once-logging.exe
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/x86_64-pc-windows-msvc/release/${{ steps.get_repository_name.outputs.REPOSITORY_NAME }}.exe
-          asset_name: ${{ steps.get_repository_name.outputs.REPOSITORY_NAME }}.exe
-          tag: ${{ steps.date.outputs.date }}
-          overwrite: true
+          name: logging-release-binary
+          path: click-once-logging.exe
+
+  build-tray:
+    name: Build with tray feature
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      #- name: Configure cache
+      #  uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --no-default-features --features=tray,logging
+
+      - name: Rename file
+        run: mv target/x86_64-pc-windows-msvc/release/click-once.exe click-once-tray.exe
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: logging-release-binary
+          path: click-once-tray.exe
+
+  build-small-tray:
+    name: Build with tray feature and Nightly optimizations
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      #- name: Configure cache
+      #  uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        env:
+          RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none"
+        run: cargo +nightly build --release --no-default-features --features=tray,logging -Z build-std=std,panic_abort -Z build-std-features=panic_immediate_abort,optimize_for_size
+
+      - name: Rename file
+        run: mv target/x86_64-pc-windows-msvc/release/click-once.exe click-once-tray-small.exe
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: logging-release-binary
+          path: click-once-tray-small.exe
+
+  release:
+    name: Release
+    runs-on: windows-latest
+    needs: [build-basic, build-logging, build-tray, build-small-tray]
+    permissions:
+      contents: write
+    steps:
+      - name: Download binaries from previous jobs
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Create the release:  https://github.com/actions/create-release
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+        with:
+          tag_name: ${{github.ref}}
+          release_name: click-once ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+      # Upload release assets:   https://github.com/actions/upload-release-asset
+      - name: Upload release asset
+        id: upload-basic
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}  # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: click-once.exe
+          asset_name: click-once.exe
+          # https://stackoverflow.com/questions/41459168/which-mime-type-is-correct-for-the-exe-file
+          asset_content_type: application/vnd.microsoft.portable-executable
+
+      - name: Upload release asset
+        id: upload-logging
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: click-once-logging.exe
+          asset_name: click-once-logging.exe
+          asset_content_type: application/vnd.microsoft.portable-executable
+
+      - name: Upload release asset
+        id: upload-tray
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: click-once-tray.exe
+          asset_name: click-once-tray.exe
+          asset_content_type: application/vnd.microsoft.portable-executable
+
+      - name: Upload release asset
+        id: upload-tray-small
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: click-once-tray-small.exe
+          asset_name: click-once-tray-small.exe
+          asset_content_type: application/vnd.microsoft.portable-executable

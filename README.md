@@ -58,3 +58,25 @@ If the process exits immediately you can still see logs for invalid arguments by
     ```bash
     cargo install --git https://github.com/Lej77/click-once.git --features=tray,logging
     ```
+
+### Cargo features
+
+This project uses [Cargo features](https://doc.rust-lang.org/cargo/reference/features.html) to conditionally compile some code. When all features are disabled the program will only prevent too fast clicks, nothing else.
+
+Having fewer features enabled makes it easier to audit the code since there is less code to read through. It also minimizes the binary size if that is important to you.
+
+#### `logging`
+
+This feature has very little impact on the binary size and allows the program to write information to a console window about what it is doing. It also allows error reporting when something goes wrong. No logging will be preformed at runtime unless it is activated by:
+
+- Passing the `logging` command line argument to the program when it is started.
+- The `std` cargo feature was enabled when compiling and the `CLICK_ONCE_LOGGING` environment variable was non-empty when the program was started.
+- The `tray` cargo feature was enabled when compiling and the `Toggle Logging` context menu item on the system tray was clicked.
+
+#### `std`
+
+Internal feature that simplifies some code by using the Rust standard library. Increases binary size by quite a bit.
+
+#### `tray`
+
+When compiled with this feature the program will create a tray icon when it is started. This makes it easier to quit the program using the tray context menu (otherwise you would have to kill it with something like the task manager). The tray also makes it easy to see if the program is active. If the `logging` cargo feature is enabled then the tray also allows toggling the console window and showing statistics about how many clicks have been blocked by the program.

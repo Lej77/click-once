@@ -118,17 +118,17 @@ jobs:
         with:
           name: basic-release-binary
 
-      - name: Download basic binary from previous job
+      - name: Download logging binary from previous job
         uses: actions/download-artifact@v4
         with:
           name: logging-release-binary
 
-      - name: Download basic binary from previous job
+      - name: Download tray binary from previous job
         uses: actions/download-artifact@v4
         with:
           name: tray-release-binary
 
-      - name: Download basic binary from previous job
+      - name: Download small tray binary from previous job
         uses: actions/download-artifact@v4
         with:
           name: tray-small-release-binary
